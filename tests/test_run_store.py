@@ -36,6 +36,82 @@ def test_list_runs_sorted_desc(tmp_path):
     assert ids.index(b) < ids.index(a)
 
 
+def test_counted_run_list_reads_only_selected_metadata_and_preserves_replay_status(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
+    older = store.create_run("较早的旧协议研究", None, {"mode": "simple"})
+    newer = store.create_run("较新的研究", None, {"mode": "simple"})
+    excluded = store.create_run("别人的研究", None, {"mode": "simple"})
+    for run_id, started_at in ((older, 10), (newer, 20), (excluded, 30)):
+        meta = store.get_meta(run_id)
+        meta["started_at"] = started_at
+        if run_id == older:
+            meta.pop("event_schema_version")
+        (tmp_path / run_id / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+    selected = {older, newer}
+    reads = []
+    real_get_meta = store.get_meta
+
+    def get_meta(run_id):
+        reads.append(run_id)
+        return real_get_meta(run_id)
+
+    monkeypatch.setattr(store, "get_meta", get_meta)
+    metas = store.list_runs(counted=selected.__contains__)
+    assert len(reads) == 2 and set(reads) == selected
+    assert [meta["run_id"] for meta in metas] == [newer, older]
+    assert metas[0]["replay_compatible"] is True and metas[0]["replay_error"] is None
+    assert metas[1]["replay_compatible"] is False and "不可回放" in metas[1]["replay_error"]
+
+
+def test_empty_counted_selection_does_not_read_metadata(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
+    run_id = store.create_run("不在授权范围的研究", None, {"mode": "simple"})
+    (tmp_path / run_id / "meta.json").write_text("{broken", encoding="utf-8")
+    reads = []
+    real_get_meta = store.get_meta
+
+    def get_meta(run_id):
+        reads.append(run_id)
+        return real_get_meta(run_id)
+
+    monkeypatch.setattr(store, "get_meta", get_meta)
+    counted = set().__contains__
+    assert store.list_runs(counted=counted) == []
+    assert store.conversations(counted=counted) == []
+    assert store.conversation_turns(run_id, counted=counted) == []
+    assert reads == []
+
+
+def test_selected_corrupt_metadata_is_still_an_explicit_error(tmp_path):
+    store = RunStore(tmp_path)
+    run_id = store.create_run("自己的损坏记录", None, {"mode": "simple"})
+    (tmp_path / run_id / "meta.json").write_text("{broken", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        store.conversations(counted={run_id}.__contains__)
+
+
+def test_counted_list_checks_both_directory_and_metadata_identity(tmp_path, monkeypatch):
+    store = RunStore(tmp_path)
+    selected = store.create_run("授权目录", None, {"mode": "simple"})
+    excluded = store.create_run("未授权目录", None, {"mode": "simple"})
+    # 目录与 metadata 互换身份：既不能读未授权目录，也不能返回授权目录里的未授权身份。
+    for directory, claimed_id in ((selected, excluded), (excluded, selected)):
+        meta = store.get_meta(directory)
+        meta["run_id"] = claimed_id
+        (tmp_path / directory / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    reads = []
+    real_get_meta = store.get_meta
+
+    def get_meta(run_id):
+        reads.append(run_id)
+        return real_get_meta(run_id)
+
+    monkeypatch.setattr(store, "get_meta", get_meta)
+    assert store.list_runs(counted={selected}.__contains__) == []
+    assert reads == [selected]
+
+
 def test_mark_orphans(tmp_path):
     s = RunStore(tmp_path)
     rid = s.create_run("孤儿", None, {})
