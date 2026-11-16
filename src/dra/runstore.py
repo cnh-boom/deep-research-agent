@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -112,11 +113,21 @@ class RunStore:
             return None
         return json.loads(p.read_text(encoding="utf-8"))
 
-    def list_runs(self) -> list[dict]:
-        metas = [m for d in self.root.iterdir() if d.is_dir()
-                 and (m := self.get_meta(d.name)) is not None]
+    def list_runs(self, *, counted: Callable[[str], bool] | None = None) -> list[dict]:
+        """按现有授权范围读取元数据，避免无关记录的 I/O 和损坏影响当前列表。
+
+        目录名先筛选；读取后仍核对 metadata 的 run_id，保留原来的身份检查。
+        不传 counted 时仍列出全部运行，供孤儿扫描等内部调用使用。
+        """
         enriched = []
-        for meta in metas:
+        for directory in self.root.iterdir():
+            if counted is not None and not counted(directory.name):
+                continue
+            if not directory.is_dir():
+                continue
+            meta = self.get_meta(directory.name)
+            if meta is None or (counted is not None and not counted(meta["run_id"])):
+                continue
             compatible, error = replay_compatibility(meta)
             enriched.append({
                 **meta,
@@ -128,17 +139,14 @@ class RunStore:
     def conversation_turns(self, conversation_id: str, *, counted=None) -> list[dict]:
         """对话里的各轮。``counted(run_id)`` 为假的轮次不算（#39 审查：以数据库登记为准，
         失败后残留的目录不能出现在对话里）。"""
-        return sorted((m for m in self.list_runs()
-                       if m.get("conversation_id", m["run_id"]) == conversation_id
-                       and (counted is None or counted(m["run_id"]))),
+        return sorted((m for m in self.list_runs(counted=counted)
+                       if m.get("conversation_id", m["run_id"]) == conversation_id),
                       key=lambda m: (m.get("turn_index", 1), m.get("started_at", 0)))
 
     def conversations(self, *, counted=None) -> list[dict]:
         """按对话汇总；只用 ``counted`` 认可的轮次计算轮数、最新一轮与首问。"""
         groups = {}
-        for meta in self.list_runs():
-            if counted is not None and not counted(meta["run_id"]):
-                continue
+        for meta in self.list_runs(counted=counted):
             cid = meta.get("conversation_id", meta["run_id"])
             group = groups.setdefault(cid, {"conversation_id":cid,"turns":[]})
             group["turns"].append(meta)

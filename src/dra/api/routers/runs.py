@@ -21,7 +21,7 @@ read_router = APIRouter(dependencies=READABLE_RUN)
 
 @router.get("/api/runs")
 def api_runs(visible: VisibleRunsDep, *, store: StoreDep) -> list[dict]:
-    return [meta for meta in store.list_runs() if visible(meta["run_id"])]
+    return store.list_runs(counted=visible)
 
 
 @read_router.get("/api/runs/{run_id}/mcp-results/{receipt_id}")

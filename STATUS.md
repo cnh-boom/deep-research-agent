@@ -26,6 +26,17 @@
 - 本副本不含历史 `review_runs/` 或旧 Git 历史。线上于 2026-11-12 切换到 `8f3288013a323d6e4977ecc3e5cb1dd8847b4a9a`，使用同机 Docker PostgreSQL 和应用账号登录，部署合同见 [docs/deployment.md](docs/deployment.md)。线上运行代码、浏览器与私域资料库暂不启用。
 - 不将离线测试通过推断为真实模型研究质量已通过。
 
+## 历史列表读取优化（2026-11-16）
+
+- **背景与范围：** 基线为 `cbcd565`。运行列表、对话列表/详情及公开示例原先先读全站 `meta.json` 再筛选，导致无关用户的损坏记录也能让这些接口报 500。本次把现有 `counted` 授权谓词下推到 `RunStore.list_runs`，先筛选目录，再核对读取到的 `run_id`。授权、排序、回放协议标记、未登记轮次过滤与 API 响应格式保留；不传谓词的孤儿扫描等内部调用仍读全量。
+- **性能实测：** 同一临时目录包含 2000 条运行，目标对话 2 轮；旧/新实现各预热后交替测量 20 次，结果逐次相同。元数据读取 **2000 → 2 次**，对话读取中位耗时 **44.31 → 2.42 ms（约 18.3 倍）**。这是当前 Linux/Python 3.12 环境的合成样本结果，不代表生产端到端延迟。
+- **HTTP 调试：** 用临时 SQLite、真实登录和 localhost Uvicorn 测试构建首页、健康检查、历史与示例。损坏另一用户的无关记录时，个人运行列表、个人对话列表、两轮详情、匿名示例列表与公开对话详情全部 **500 → 200**；修复后同一次运行内，损坏前后五条响应逐字节相同。共 21 项检查通过；匿名私有列表仍 401，跨用户访问仍 404。测试服务已停止，临时数据库/运行目录已清理，没有读取 `.env`。
+- **回归：** 新增 8 条用例，旧实现为 7 failed、1 passed；修复后运行存储、真实归属、示例、追问及研究端到端定向回归 **67 passed、2 skipped**；最终 `uv run --locked pytest -q --durations=10` 为 **1696 passed、49 skipped（76.35 秒）**。另一个 Codex 子代理只读复核无阻塞发现，并对 60 份样本的 104 组列表/对话输出比较确认一致。
+- **基线检查：** 后端 `uv run --locked pytest -q --durations=15` 为 **1688 passed、49 skipped**；前端 `npm test` 为 **219 passed / 29 个文件**，`npm run lint` 通过（7 条既有 Fast Refresh 警告），`npm run build` 通过（568.35 kB JS、既有 500 kB 包体提醒）；`uvx ruff@0.17.3 check --select E9,F63,F7,F82 .` 通过。
+- **影响的限制与未验证部分：** 无新增、移除或改变的数量/大小上限、截断、白名单或降级。仍枚举全站运行目录，多个示例仍重复枚举；授权范围内的损坏记录仍显式报错。本轮不调用真实模型/搜索、外部资料服务、Docker 或浏览器，未运行 PostgreSQL 验收及 Claude Code 交叉审查。
+- **任务记录：** 当前远程为 `cnh-boom/deep-research-agent`，该 fork 已关闭 Issues，创建任务返回 GitHub 410；未修改仓库设置，使用 `fix/history-metadata-filter` 分支，以本节记录范围和验收。探针、前后 JSON 与基线快照留在本机忽略的 `scratchpad/history-metadata-filter/`。
+- **后续候选（本轮未改）：** 前端原文预览 `SourceText` 将全文 `Array.from`，长原文有内存放大；`Sidebar` 列表请求缺少迟到响应守卫；同步事件回放反复复制工具映射，长日志有二次复杂度。待 fork 开启 Issues 后分别立项，不与本次后端修复混改。
+
 ## 公开试用上线（2026-11-12，#57）
 
 - 已用不可变镜像 `sha-8f3288013a323d6e4977ecc3e5cb1dd8847b4a9a` 和 digest `sha256:27cb2c8882f2f0985878c60bbab79b35d440a878057c6a4d9e0ba09f0a9ed800` 完成 stage、migrate、canary verify、activate。迁移到 `0005`，发布状态无 pending，previous 为 `3fc23a98ec9c5bb8cc6c5bc34afa7281502c4032`。

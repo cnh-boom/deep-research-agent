@@ -108,6 +108,25 @@ def test_showcase_list_is_public_and_only_counts_registered_turns(world):
     assert [t["run_id"] for t in conversation["turns"]] == world["turns"]
 
 
+def test_public_showcase_list_does_not_read_unrelated_corrupt_metadata(world, monkeypatch):
+    _publish(world)
+    store = world["store"]
+    (store.root / world["private"] / "meta.json").write_text("{broken", encoding="utf-8")
+    reads = []
+    real_get_meta = store.get_meta
+
+    def get_meta(run_id):
+        reads.append(run_id)
+        return real_get_meta(run_id)
+
+    monkeypatch.setattr(store, "get_meta", get_meta)
+    response = world["anonymous"].get("/api/showcases")
+    assert response.status_code == 200, response.text
+    [item] = response.json()
+    assert item["run_ids"] == world["turns"] and item["turn_count"] == 2 and item["available"] is True
+    assert len(reads) == 2 and set(reads) == set(world["turns"])
+
+
 def test_expired_login_still_sees_showcases_but_is_sent_to_login_for_own_research(world):
     stale = TestClient(web.app, cookies={SESSION_COOKIE: "expired-or-forged-token"})
     _publish(world)

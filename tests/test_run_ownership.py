@@ -127,6 +127,30 @@ def test_lists_only_show_your_own(world):
         assert other_run not in runs
 
 
+@pytest.mark.parametrize("path", ["/api/runs", "/api/conversations", "/api/conversations/{run_id}"])
+def test_history_only_reads_authorized_metadata_even_when_other_records_are_corrupt(world, monkeypatch, path):
+    store = world["store"]
+    _, client, own_run = world["alice"]
+    _, _, other_run = world["bob"]
+    leftover = _leftover_turn(store, own_run)
+    for run_id in (other_run, leftover):
+        (store.root / run_id / "meta.json").write_text("{broken", encoding="utf-8")
+    reads = []
+    real_get_meta = store.get_meta
+
+    def get_meta(run_id):
+        reads.append(run_id)
+        return real_get_meta(run_id)
+
+    monkeypatch.setattr(store, "get_meta", get_meta)
+    response = client.get(path.format(run_id=own_run))
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    metas = payload["turns"] if isinstance(payload, dict) else payload
+    assert [meta["run_id"] for meta in metas] == [own_run]
+    assert reads == [own_run]
+
+
 def test_admins_do_not_see_other_peoples_research(world, database):
     admin = auth.create_user(database, "boss@example.com", PASSWORD, role="admin")
     client = TestClient(web.app, cookies={
